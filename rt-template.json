@@ -1,0 +1,537 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Mappings": {
+        "OSNameToImageID": {
+            "Ubuntu 14.04": {
+                "ID": "d57696ba-5ed2-43fe-bf78-a587829973a9"
+            },
+            "Ubuntu 14.10": {
+                "ID": "na"
+            }
+        }
+    },
+    "Parameters": {
+        "AvailabilityZone": {
+            "AllowedValues": [
+                "NCI",
+                "QRIScloud",
+                "intersect",
+                "intersect-01",
+                "melbourne",
+                "melbourne-np",
+                "melbourne-qh2",
+                "monash",
+                "monash-01",
+                "monash-02",
+                "pawsey",
+                "pawsey-01",
+                "sa",
+                "tasmania"
+            ],
+            "Default": "monash-01",
+            "Description": "Availability zone",
+            "Type": "String"
+        },
+        "KeyPair": {
+            "Description": "OpenStack key pair name",
+            "Type": "String"
+        },
+        "MySQLRootPassword": {
+            "Description": "MySQL root password",
+            "Type": "String"
+        },
+        "OSName": {
+            "AllowedValues": [
+                "Ubuntu 14.04",
+                "Ubuntu 14.10"
+            ],
+            "Default": "Ubuntu 14.04",
+            "Description": "Name of the base OS",
+            "Type": "String"
+        },
+        "RTDatabaseUserPassword": {
+            "Default": "rt_pass",
+            "Description": "Database password for rt4 user",
+            "Type": "String"
+        },
+        "VMFlavour": {
+            "AllowedValues": [
+                "m1.small",
+                "m1.medium",
+                "m1.large",
+                "m1.xlarge",
+                "m1.xxlarge"
+            ],
+            "Default": "m1.small",
+            "Description": "VM flavour",
+            "Type": "String"
+        }
+    },
+    "Resources": {
+        "RTDatabase": {
+            "Properties": {
+                "AvailabilityZone": {
+                    "Ref": "AvailabilityZone"
+                },
+                "Size": "40"
+            },
+            "Type": "AWS::EC2::Volume"
+        },
+        "RTSecurityGroup": {
+            "Properties": {
+                "GroupDescription": "Enable inbound SMTP, SSH and HTTP access",
+                "SecurityGroupIngress": [
+                    {
+                        "CidrIp": "0.0.0.0/0",
+                        "FromPort": "22",
+                        "IpProtocol": "tcp",
+                        "ToPort": "22"
+                    },
+                    {
+                        "CidrIp": "0.0.0.0/0",
+                        "FromPort": "443",
+                        "IpProtocol": "tcp",
+                        "ToPort": "443"
+                    },
+                    {
+                        "CidrIp": "0.0.0.0/0",
+                        "FromPort": "25",
+                        "IpProtocol": "tcp",
+                        "ToPort": "25"
+                    },
+                    {
+                        "CidrIp": "0.0.0.0/0",
+                        "FromPort": "465",
+                        "IpProtocol": "tcp",
+                        "ToPort": "465"
+                    }
+                ]
+            },
+            "Type": "AWS::EC2::SecurityGroup"
+        },
+        "RTServer": {
+            "Properties": {
+                "availability_zone": {
+                    "Ref": "AvailabilityZone"
+                },
+                "block_device_mapping": [
+                    {
+                        "device_name": "/dev/vdc",
+                        "volume_id": {
+                            "Ref": "RTDatabase"
+                        }
+                    }
+                ],
+                "flavor": {
+                    "Ref": "VMFlavour"
+                },
+                "image": {
+                    "Fn::FindInMap": [
+                        "OSNameToImageID",
+                        {
+                            "Ref": "OSName"
+                        },
+                        "ID"
+                    ]
+                },
+                "key_name": {
+                    "Ref": "KeyPair"
+                },
+                "networks": [],
+                "security_groups": [
+                    {
+                        "Ref": "RTSecurityGroup"
+                    }
+                ],
+                "user_data": {
+                    "Fn::Base64": {
+                        "Fn::Join": [
+                            "\n",
+                            [
+                                "#!/bin/bash",
+                                "VM_HOST=`nslookup $(ifconfig eth0 | grep 'inet addr:' | cut -d: -f2 | awk '{print $1}') | grep 'name =' | cut -d ' ' -f 3 | sed 's/.$//'`",
+                                {
+                                    "Fn::Join": [
+                                        "\n",
+                                        [
+                                            "mkfs.ext4 /dev/vdc",
+                                            "sed -ie 's#/dev/vdb\t/mnt#/dev/vdb\t/tmp#' /etc/fstab",
+                                            "echo -e '/dev/vdc\t/mnt/db_volume\tauto\tdefaults,nobootwait\t0\t2' >> /etc/fstab",
+                                            "umount /mnt",
+                                            "mkdir /mnt/db_volume",
+                                            "mount /tmp",
+                                            "chmod 1777 /tmp",
+                                            "mount /mnt/db_volume"
+                                        ]
+                                    ]
+                                },
+                                {
+                                    "Fn::Join": [
+                                        "\n",
+                                        [
+                                            "echo \"Changing shell to bash for ec2-user\"",
+                                            "chsh -s /bin/bash ec2-user",
+                                            "echo \"Upgrade started at $(date)\"",
+                                            "apt-get update",
+                                            "apt-get -y upgrade",
+                                            "echo \"Upgrade complete at $(date)\""
+                                        ]
+                                    ]
+                                },
+                                {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "echo \"Installing and configuring mysql...\"\n",
+                                            "debconf-set-selections <<< 'mysql-server mysql-server/root_password password ",
+                                            {
+                                                "Ref": "MySQLRootPassword"
+                                            },
+                                            "'\n",
+                                            "debconf-set-selections <<< 'mysql-server mysql-server/root_password_again password ",
+                                            {
+                                                "Ref": "MySQLRootPassword"
+                                            },
+                                            "'\n",
+                                            "apt-get -y install mysql-server\n",
+                                            "echo \"Improving mysql security\"\n",
+                                            "echo \"DELETE FROM mysql.user WHERE User='';\" | mysql --password=",
+                                            {
+                                                "Ref": "MySQLRootPassword"
+                                            },
+                                            "\n",
+                                            "echo \"DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');\" | mysql --password=",
+                                            {
+                                                "Ref": "MySQLRootPassword"
+                                            },
+                                            "\n",
+                                            "echo \"FLUSH PRIVILEGES;\" | mysql --password=",
+                                            {
+                                                "Ref": "MySQLRootPassword"
+                                            },
+                                            "\n"
+                                        ]
+                                    ]
+                                },
+                                {
+                                    "Fn::Join": [
+                                        "\n",
+                                        [
+                                            "echo \"Relocating the mysql data directory...\"",
+                                            "/etc/init.d/mysql stop",
+                                            "mv /var/lib/mysql /mnt/db_volume",
+                                            "ln -s /mnt/db_volume/mysql/ /var/lib/",
+                                            {
+                                                "Fn::Join": [
+                                                    "\n",
+                                                    [
+                                                        "cat >> /etc/apparmor.d/local/usr.sbin.mysqld << '!!EOF!!'",
+                                                        "/mnt/db_volume/mysql/ r,",
+                                                        "/mnt/db_volume/mysql/** rwk,",
+                                                        "!!EOF!!"
+                                                    ]
+                                                ]
+                                            },
+                                            "/etc/init.d/mysql start"
+                                        ]
+                                    ]
+                                },
+                                {
+                                    "Fn::Join": [
+                                        "\n",
+                                        [
+                                            "echo \"Installing postfix...\"",
+                                            "debconf-set-selections <<< \"postfix postfix/main_mailer_type select Internet with smarthost\"",
+                                            "debconf-set-selections <<< \"postfix postfix/relayhost string smtp.monash.edu.au\"",
+                                            "debconf-set-selections <<< \"postfix postfix/mailname string $VM_HOST\"",
+                                            "debconf-set-selections <<< \"postfix postfix/destinations string localhost.localdomain, localhost, $VM_HOST\"",
+                                            "apt-get -y install postfix"
+                                        ]
+                                    ]
+                                },
+                                {
+                                    "Fn::Join": [
+                                        "\n",
+                                        [
+                                            "cd /tmp/",
+                                            {
+                                                "Fn::Join": [
+                                                    " ",
+                                                    [
+                                                        "apt-get -y install",
+                                                        "spawn-fcgi",
+                                                        "nginx",
+                                                        "ssl-cert",
+                                                        "libgd-gd2-perl",
+                                                        "libgraphviz-perl",
+                                                        "build-essential",
+                                                        "libapache-session-perl",
+                                                        "libcgi-emulate-psgi-perl",
+                                                        "libcgi-psgi-perl",
+                                                        "libconvert-color-perl",
+                                                        "libcrypt-eksblowfish-perl",
+                                                        "libcrypt-ssleay-perl",
+                                                        "libcrypt-x509-perl",
+                                                        "libcss-squish-perl",
+                                                        "libdata-guid-perl",
+                                                        "libdata-ical-perl",
+                                                        "libdate-extract-perl",
+                                                        "libdate-manip-perl",
+                                                        "libdatetime-perl",
+                                                        "libdatetime-format-natural-perl",
+                                                        "libdatetime-locale-perl",
+                                                        "libdbix-searchbuilder-perl",
+                                                        "libdevel-globaldestruction-perl",
+                                                        "libdevel-stacktrace-perl",
+                                                        "libemail-address-perl",
+                                                        "libemail-address-list-perl",
+                                                        "libfcgi-perl",
+                                                        "libfcgi-procmanager-perl",
+                                                        "libfile-sharedir-perl",
+                                                        "libfile-which-perl",
+                                                        "libgd-text-perl",
+                                                        "libgnupg-interface-perl",
+                                                        "libhtml-formattext-withlinks-perl",
+                                                        "libhtml-formattext-withlinks-andtables-perl",
+                                                        "libhtml-mason-perl",
+                                                        "libhtml-mason-psgihandler-perl",
+                                                        "libhtml-quoted-perl",
+                                                        "libhtml-rewriteattributes-perl",
+                                                        "libhtml-scrubber-perl",
+                                                        "libipc-run3-perl",
+                                                        "libjson-perl",
+                                                        "liblist-moreutils-perl",
+                                                        "liblocale-maketext-fuzzy-perl",
+                                                        "liblocale-maketext-lexicon-perl",
+                                                        "liblog-dispatch-perl",
+                                                        "libmime-types-perl",
+                                                        "libmodule-refresh-perl",
+                                                        "libmodule-versions-report-perl",
+                                                        "libnet-cidr-perl",
+                                                        "libnet-ssleay-perl",
+                                                        "libperlio-eol-perl",
+                                                        "libplack-perl",
+                                                        "libregexp-common-perl",
+                                                        "libregexp-common-net-cidr-perl",
+                                                        "libregexp-ipv6-perl",
+                                                        "librole-basic-perl",
+                                                        "libstring-shellquote-perl",
+                                                        "libsymbol-global-name-perl",
+                                                        "libtext-password-pronounceable-perl",
+                                                        "libtext-quoted-perl",
+                                                        "libtext-template-perl",
+                                                        "libtext-wikiformat-perl",
+                                                        "libtext-wrapper-perl",
+                                                        "libtime-modules-perl",
+                                                        "libtree-simple-perl",
+                                                        "libuniversal-require-perl",
+                                                        "libxml-rss-perl",
+                                                        "libmime-tools-perl",
+                                                        "libparallel-prefork-perl",
+                                                        "libnet-address-ip-local-perl"
+                                                    ]
+                                                ]
+                                            },
+                                            "wget --quiet https://download.bestpractical.com/pub/rt/release/rt-4.2.10.tar.gz",
+                                            "tar -zxf rt-4.2.10.tar.gz",
+                                            "rm rt-4.2.10.tar.gz",
+                                            "cd rt-4.2.10",
+                                            {
+                                                "Fn::Join": [
+                                                    "",
+                                                    [
+                                                        "./configure --with-db-rt-pass='",
+                                                        {
+                                                            "Ref": "RTDatabaseUserPassword"
+                                                        },
+                                                        "' --with-web-user=www-data",
+                                                        " --with-web-group=www-data",
+                                                        " --enable-graphviz",
+                                                        " --enable-gd"
+                                                    ]
+                                                ]
+                                            },
+                                            "echo \"Configuring cpan...\"",
+                                            "(echo yes; echo yes;) | su -c '/usr/bin/perl -MCPAN -e shell'",
+                                            "su -c 'make fixdeps'",
+                                            "make install",
+                                            {
+                                                "Fn::Join": [
+                                                    "",
+                                                    [
+                                                        "echo ",
+                                                        {
+                                                            "Ref": "MySQLRootPassword"
+                                                        },
+                                                        " | make initialize-database"
+                                                    ]
+                                                ]
+                                            },
+                                            "cd .. && rm -fR rt-4.2.10*",
+                                            "mkdir /var/log/rt4 && chown www-data:root $_ && chmod 770 $_",
+                                            {
+                                                "Fn::Join": [
+                                                    "\n",
+                                                    [
+                                                        "cat > /etc/nginx/sites-available/default << '!!EOF!!'",
+                                                        "##",
+                                                        "# RT Server configuration",
+                                                        "##",
+                                                        "server {",
+                                                        "   listen 80;",
+                                                        "   listen [::]:80;",
+                                                        "   listen 443 default_server ssl;",
+                                                        "   listen [::]:443 default_server ssl ipv6only=on;",
+                                                        "   server_name localhost;",
+                                                        "   ssl_certificate /etc/ssl/certs/ssl-cert-snakeoil.pem;",
+                                                        "   ssl_certificate_key /etc/ssl/private/ssl-cert-snakeoil.key;",
+                                                        "   location / {",
+                                                        "     fastcgi_param  QUERY_STRING       $query_string;",
+                                                        "     fastcgi_param  REQUEST_METHOD     $request_method;",
+                                                        "     fastcgi_param  CONTENT_TYPE       $content_type;",
+                                                        "     fastcgi_param  CONTENT_LENGTH     $content_length;",
+                                                        "     fastcgi_param  SCRIPT_NAME        \"\";",
+                                                        "     fastcgi_param  PATH_INFO          $uri;",
+                                                        "     fastcgi_param  REQUEST_URI        $request_uri;",
+                                                        "     fastcgi_param  DOCUMENT_URI       $document_uri;",
+                                                        "     fastcgi_param  DOCUMENT_ROOT      $document_root;",
+                                                        "     fastcgi_param  SERVER_PROTOCOL    $server_protocol;",
+                                                        "     fastcgi_param  GATEWAY_INTERFACE  CGI/1.1;",
+                                                        "     fastcgi_param  SERVER_SOFTWARE    nginx/$nginx_version;",
+                                                        "     fastcgi_param  REMOTE_ADDR        $remote_addr;",
+                                                        "     fastcgi_param  REMOTE_PORT        $remote_port;",
+                                                        "     fastcgi_param  SERVER_ADDR        $server_addr;",
+                                                        "     fastcgi_param  SERVER_PORT        $server_port;",
+                                                        "     fastcgi_param  SERVER_NAME        $server_name;",
+                                                        "     fastcgi_pass 127.0.0.1:9000;",
+                                                        "   }",
+                                                        "}",
+                                                        "!!EOF!!"
+                                                    ]
+                                                ]
+                                            },
+                                            {
+                                                "Fn::Join": [
+                                                    "\n",
+                                                    [
+                                                        "cat > /etc/init/rt4.conf << '!!EOF!!'",
+                                                        "description     \"Request Tracker 4\"",
+                                                        "start on filesystem or runlevel [2345]",
+                                                        "stop on runlevel [!2345]",
+                                                        "setuid www-data",
+                                                        "setgid www-data",
+                                                        "pre-start script",
+                                                        "   test -x /opt/rt4/sbin/rt-server.fcgi || { stop; exit 0; }",
+                                                        "end script",
+                                                        "respawn",
+                                                        "script",
+                                                        "   exec /usr/bin/spawn-fcgi \\",
+                                                        "       -n \\",
+                                                        "       -u www-data \\",
+                                                        "       -g www-data \\",
+                                                        "       -a 127.0.0.1 -p 9000 \\",
+                                                        "       -- /opt/rt4/sbin/rt-server.fcgi >> /var/log/rt4/rt4.log 2>&1",
+                                                        "end script",
+                                                        "!!EOF!!"
+                                                    ]
+                                                ]
+                                            },
+                                            {
+                                                "Fn::Join": [
+                                                    "\n",
+                                                    [
+                                                        "cat > /opt/rt4/etc/RT_SiteConfig.pm << '!!EOF!!'",
+                                                        "use Net::Address::IP::Local;",
+                                                        "use Socket;",
+                                                        "$address = Net::Address::IP::Local->public_ipv4;",
+                                                        "$host = gethostbyaddr(inet_aton($address), AF_INET);",
+                                                        "$baseUrl = 'https://'.$host;",
+                                                        "Set( $rtname, 'Store.Star');",
+                                                        "Set( $WebPort, 443);",
+                                                        "Set( $WebDomain, $host);",
+                                                        "Set( $WebBaseURL, $baseUrl);",
+                                                        "Set( $CanonicalizeRedirectURLs, 1);",
+                                                        "1;",
+                                                        "!!EOF!!"
+                                                    ]
+                                                ]
+                                            },
+                                            {
+                                                "Fn::Join": [
+                                                    "\n",
+                                                    [
+                                                        "cat > /etc/cron.d/rt << '!!EOF!!'",
+                                                        "0 0 * * * root /opt/rt4/sbin/rt-email-digest -m daily",
+                                                        "0 0 * * 0 root /opt/rt4/sbin/rt-email-digest -m weekly",
+                                                        "0 * * * * root /opt/rt4/sbin/rt-email-dashboards",
+                                                        "!!EOF!!"
+                                                    ]
+                                                ]
+                                            },
+                                            {
+                                                "Fn::Join": [
+                                                    "\n",
+                                                    [
+                                                        "cat >> /etc/aliases << '!!EOF!!'",
+                                                        "rt:         \"|/opt/rt4/bin/rt-mailgate --queue general --action correspond --url http://localhost/\"",
+                                                        "rt-comment: \"|/opt/rt4/bin/rt-mailgate --queue general --action comment --url http://localhost/\"",
+                                                        "!!EOF!!"
+                                                    ]
+                                                ]
+                                            },
+                                            "newaliases",
+                                            "service rt4 start",
+                                            "service nginx restart"
+                                        ]
+                                    ]
+                                },
+                                {
+                                    "Fn::Join": [
+                                        "\n",
+                                        [
+                                            "echo \"Locking down postfix...\"",
+                                            {
+                                                "Fn::Join": [
+                                                    "\n",
+                                                    [
+                                                        "cat > /etc/postfix/sender_filter << '!!EOF!!'",
+                                                        "store.star.help@monash.edu PERMIT",
+                                                        "!!EOF!!"
+                                                    ]
+                                                ]
+                                            },
+                                            {
+                                                "Fn::Join": [
+                                                    "\n",
+                                                    [
+                                                        "cat >> /etc/postfix/main.cf << '!!EOF!!'",
+                                                        "smtpd_sender_restrictions = permit_sasl_authenticated, permit_mynetworks, reject_unknown_sender_domain, check_sender_access hash:/etc/postfix/sender_filter, reject",
+                                                        "!!EOF!!"
+                                                    ]
+                                                ]
+                                            },
+                                            "cd /etc/postfix/ && postmap hash:sender_filter",
+                                            "service postfix reload"
+                                        ]
+                                    ]
+                                },
+                                {
+                                    "Fn::Join": [
+                                        "\n",
+                                        [
+                                            "cat > /opt/rt4/next-steps << END",
+                                            "Get a real SSL cert for $VM_HOST and reconfigure nginx",
+                                            "Forward RT emails to rt@$VM_HOST",
+                                            "END"
+                                        ]
+                                    ]
+                                }
+                            ]
+                        ]
+                    }
+                }
+            },
+            "Type": "OS::Nova::Server"
+        }
+    }
+}

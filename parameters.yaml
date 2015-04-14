@@ -1,0 +1,7 @@
+parameters:
+  VMFlavour: m1.medium
+  KeyPair: <Your key pair name>
+  AvailabilityZone: monash-01
+  RTDatabaseUserPassword: <A password>
+  MySQLRootPassword: <Another password>
+

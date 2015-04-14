@@ -1,0 +1,11 @@
+use Net::Address::IP::Local;
+use Socket;
+$address = Net::Address::IP::Local->public_ipv4;
+$host = gethostbyaddr(inet_aton($address), AF_INET);
+$baseUrl = 'https://'.$host;
+Set( $rtname, 'Store.Star');
+Set( $WebPort, 443);
+Set( $WebDomain, $host);
+Set( $WebBaseURL, $baseUrl);
+Set( $CanonicalizeRedirectURLs, 1);
+1;

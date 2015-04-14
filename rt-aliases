@@ -1,0 +1,2 @@
+rt:         "|/opt/rt4/bin/rt-mailgate --queue general --action correspond --url http://localhost/"
+rt-comment: "|/opt/rt4/bin/rt-mailgate --queue general --action comment --url http://localhost/"

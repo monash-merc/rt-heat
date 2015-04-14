@@ -1,0 +1,2 @@
+/mnt/db_volume/mysql/ r,
+/mnt/db_volume/mysql/** rwk,
